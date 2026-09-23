@@ -90,6 +90,36 @@ SQL
 That `REVOKE` is the line doing the work. Without it every role can connect
 to the new database, because `PUBLIC` holds `CONNECT` by default.
 
+`bin/create-db` runs those same statements and prints the `.env` lines to
+paste into the project — one complete block for each connection style: an
+app container on the shared network, an app container going through
+`host.docker.internal` (see
+[Connecting without joining the network](docs/connecting-without-the-network.md)),
+and something running directly on the host. The latter two use
+`POSTGRES_PORT` from `.env`. Run it bare and it asks for the database name, the
+user and the password; Enter takes the default, which is a user named after
+the database and a generated password:
+
+```
+bin/create-db                       # asks for everything
+bin/create-db my-app                # asks for user and password
+bin/create-db my-app my_app_user    # asks for the password
+```
+
+The password shows as you type it and is asked twice. Before anything is
+created it shows a summary and asks `Create it? [Y]es, [e]dit, [q]uit`;
+edit goes round the questions again with your answers as the defaults, so
+Enter keeps whatever was already right. A name that is invalid or already
+taken is asked again rather than ending the run, and Ctrl-D at any prompt
+cancels without creating anything.
+
+Without a terminal — in a script or CI — nothing is asked and the defaults
+are used.
+
+It refuses if the role or database already exists rather than resetting a
+password a project is already using. The password is printed once and stored
+nowhere, so copy it before you close the terminal.
+
 **Redis** — nothing to create. Pick two unused database numbers, one for the
 default connection and one for the cache, and write them into the project's
 `.env`. Keep a note of which project holds which pair; the server cannot tell
@@ -279,6 +309,13 @@ docker compose exec minio mc ls local                  # after `mc alias set`
 open http://127.0.0.1:8025                             # the mail inbox
 open http://127.0.0.1:9001                             # the MinIO console
 ```
+
+The MinIO console logs in with `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD`
+from `.env` — `dockyard` / `dockyard-root` unless you changed them. That is
+the root account: use it in the console and for `mc alias set`, never in a
+project's `.env`, which gets its own scoped key. Recent MinIO releases have
+stripped user and policy management out of the console, so create project
+keys with the `mc` commands under [Adding a project](#adding-a-project).
 
 Dump and restore a project's database:
 

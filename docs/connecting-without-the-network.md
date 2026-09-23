@@ -1,98 +1,63 @@
 # Connecting without joining the network
 
-The README's [Connecting an application](../README.md#connecting-an-application)
-has your app's containers join the `dockyard` network and reach the services
-by hostname. That is the default, and it is the route to prefer on Linux.
+By default, app containers join the `dockyard` network (see the
+[README](../README.md#connecting-an-application)). You can skip that and
+connect **through your machine** instead, using `host.docker.internal`.
 
-There is a second route: leave the app's containers off the shared network
-entirely and reach the services through the host, on the ports this stack
-already publishes to `127.0.0.1`. Nothing in `compose.yml` changes for it.
+**Works on:** Docker Desktop (macOS, Windows).
+**Linux:** use the network instead. See [below](#linux).
 
-## Why you might want it
+## Why use it
 
-- **Your app stays unreachable from other projects.** Everything on the
-  `dockyard` network can reach everything else on it, across projects. An app
-  that never joins is not addressable by another project's containers at all.
-- **No start-order dependency.** An `external: true` network has to exist
-  before the app starts. Going through the host, the app starts whether or
-  not this stack is up, and fails at its first connection instead.
-- **Nothing to add to the app's compose file** on macOS and Windows.
+- Other projects' containers can't reach your app.
+- Your app doesn't need dockyard running before it starts.
+- No changes to your app's `compose.yml`.
 
-## Through the host: `host.docker.internal`
+## Setup
 
-Point the app at `host.docker.internal` and the **host** ports — the ones in
-the README's [What it runs](../README.md#what-it-runs) table, or whatever you
-set `POSTGRES_PORT` and friends to in `.env`.
+Use `host.docker.internal` and the **host ports** from dockyard's `.env`:
 
-```
+```ini
 DB_HOST=host.docker.internal
-DB_PORT=5432
+DB_PORT=5432                # POSTGRES_PORT
 
 REDIS_HOST=host.docker.internal
-REDIS_PORT=6379
+REDIS_PORT=6379             # REDIS_PORT
 
 AWS_ENDPOINT=http://host.docker.internal:9000
 AWS_URL=http://127.0.0.1:9000/my-app
 
 MAIL_HOST=host.docker.internal
-MAIL_PORT=1025
+MAIL_PORT=1025              # MAILPIT_SMTP_PORT
 ```
 
-Everything else — database names, credentials, Redis database numbers, the
-bucket — is unchanged from the README.
+Everything else (database name, user, password, bucket) stays the same.
+`bin/create-db` prints this block for you with the right port.
 
-### Docker Desktop (macOS, Windows)
+## Things to watch
 
-Works as written. Docker Desktop resolves `host.docker.internal` inside every
-container and forwards the traffic to the host's loopback, where the
-`127.0.0.1:` port mappings are listening.
+- **Ports must match `.env`.** If you change `POSTGRES_PORT` in dockyard,
+  update your app too. On the network, the port is always `5432`.
+- **Check MinIO presigned URLs in a browser.** They are signed with
+  `host.docker.internal`, which your browser may not resolve.
 
-### Linux (Docker Engine)
+## Linux
 
-`host.docker.internal` does not exist by default. Add it to each service that
-needs it:
+`host.docker.internal` needs this in your app's service:
 
 ```yaml
-services:
-  app:
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+extra_hosts:
+  - "host.docker.internal:host-gateway"
 ```
 
-That alone is not enough, and this is the catch. `host-gateway` resolves to
-the bridge IP (typically `172.17.0.1`), not to `127.0.0.1`. The services here
-publish to loopback only, so the connection is refused.
-
-Making it work means publishing on the bridge address or on all interfaces,
-which breaks rule 1 at the top of `compose.yml` — a bare port mapping exposes
-these databases to your whole network regardless of the host firewall. Do not
-do that for convenience. **On Linux, join the network instead.**
-
-## Things that change on this route
-
-- **Ports are coupled to `.env`.** On the shared network the app always uses
-  the standard ports and host remapping is irrelevant. Through the host, if
-  you change `POSTGRES_PORT` here, every app using this route has to change
-  with it.
-- **MinIO URLs still need two settings.** `AWS_ENDPOINT` is what the app
-  connects to; `AWS_URL` is what ends up in a browser. The browser runs on the
-  host, where `127.0.0.1` is right and `host.docker.internal` may not resolve.
-  Presigned URLs are signed against the endpoint host, so check them in a
-  browser before relying on them.
-- **Mailpit is the same shared inbox.** Only the address changes.
-
-## Not recommended: sharing a network namespace
-
-`network_mode: "container:<name>"` puts the app inside another container's
-network stack, so the service is reachable at `localhost`. It replaces the
-app's own networking, ties the app to one service container by name, and
-breaks whenever that container is recreated. It solves nothing the two routes
-above do not.
+It still won't connect. dockyard's ports only listen on `127.0.0.1`, and on
+Linux this hostname points at a different address. Opening the ports wider
+would expose the databases to your network, so **join the network instead**.
 
 ## Which to use
 
-| Situation | Route |
+| Situation | Use |
 |---|---|
-| Linux | Join the `dockyard` network |
-| macOS / Windows, app should be isolated from other projects | Through the host |
-| macOS / Windows, no preference | Either; the network route is the documented default |
+| Linux | The network |
+| macOS / Windows, want isolation from other projects | This page |
+| macOS / Windows, no preference | The network (default) |

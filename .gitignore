@@ -1,0 +1,26 @@
+# Runtime state. state/registry.json is the only record of which Redis
+# database numbers belong to which project, so it is per-machine and
+# deliberately not shared.
+state/
+backups/
+
+# Real configuration. .env holds this machine's superuser passwords; the
+# tracked copy is .env.example.
+.env
+.env.*
+!.env.example
+
+# Per-machine compose changes, merged automatically by Docker Compose.
+compose.override.yml
+compose.override.yaml
+
+# Backups written by `dockyard project:env --write` before it patches a
+# project's .env in place.
+*.bak
+*.dockyard.bak
+
+# Editor and OS noise.
+.DS_Store
+.idea/
+.vscode/
+*.swp

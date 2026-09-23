@@ -1,0 +1,131 @@
+# dockyard -- shared local backing services.
+#
+# Four services, all started by `dockyard up`: Postgres, Redis, MinIO and
+# Mailpit. There is no optional tier and nothing to enable.
+#
+# Three rules govern this file.
+#
+# 1. Every published port is written 127.0.0.1:HOST:CONTAINER. Docker
+#    programs packet filtering directly and a bare "HOST:CONTAINER" mapping
+#    is reachable from the whole local network even when a host firewall is
+#    running. These are credentialed databases with convenience passwords;
+#    the loopback prefix is the control that keeps them local.
+#
+# 2. Every service has a healthcheck. `dockyard up` waits on them, so a
+#    service without one reports ready before it can accept connections and
+#    the first `project:add` after a cold start fails confusingly.
+#
+# 3. Every image tag comes from .env. The version a service runs is recorded
+#    in one place, and an upgrade is a one-line change with a visible diff.
+#
+# Machine-specific changes belong in a compose.override.yml beside this file,
+# which Docker Compose merges automatically and which is gitignored.
+
+name: ${DOCKYARD_PROJECT:-dockyard}
+
+x-restart: &restart
+  restart: unless-stopped
+
+x-healthcheck: &healthcheck
+  interval: 5s
+  timeout: 3s
+  retries: 12
+  start_period: 10s
+
+networks:
+  dockyard:
+    # Named explicitly so a project's own compose file can join it with
+    # `external: true` and reach services by hostname.
+    name: ${DOCKYARD_NETWORK:-dockyard}
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
+  mailpit-data:
+
+services:
+
+  postgres:
+    <<: *restart
+    image: postgres:${POSTGRES_VERSION:-17-alpine}
+    networks: [dockyard]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dockyard}
+      POSTGRES_DB: postgres
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      <<: *healthcheck
+      # -U and -d are required: without them pg_isready probes a database
+      # named after the container user, which does not exist, and the
+      # service never reports healthy.
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+
+  redis:
+    <<: *restart
+    image: redis:${REDIS_VERSION:-7-alpine}
+    networks: [dockyard]
+    # appendonly keeps per-project databases across a restart; without it a
+    # `dockyard restart` silently empties every project's cache and queue.
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --databases
+      - "${REDIS_DATABASES:-16}"
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "redis-cli", "ping"]
+
+  minio:
+    <<: *restart
+    image: minio/minio:${MINIO_VERSION:-latest}
+    networks: [dockyard]
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-dockyard}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-dockyard-root}
+      # Projects get a presigned-URL host that matches what their framework
+      # will hand to a browser on the host, not the container hostname.
+      MINIO_BROWSER_REDIRECT_URL: http://127.0.0.1:${MINIO_CONSOLE_PORT:-9001}
+    ports:
+      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "mc", "ready", "local"]
+
+  mailpit:
+    <<: *restart
+    image: axllent/mailpit:${MAILPIT_VERSION:-latest}
+    networks: [dockyard]
+    environment:
+      MP_MAX_MESSAGES: ${MAILPIT_MAX_MESSAGES:-5000}
+      # One shared inbox for every project, so accept whatever credentials a
+      # project's mailer is configured with rather than making each project
+      # match a single set.
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+      # Without this mailpit stores messages under /tmp inside the container,
+      # so a restart empties the inbox -- the same trap the redis appendonly
+      # flag above exists to avoid.
+      MP_DATABASE: /data/mailpit.db
+    ports:
+      - "127.0.0.1:${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025"
+    volumes:
+      - mailpit-data:/data
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "/mailpit", "readyz"]

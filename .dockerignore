@@ -1,0 +1,37 @@
+# dockyard runs published images and builds none of its own, so today this
+# file guards a build context that does not exist yet. It is kept current
+# anyway: the moment anything here gains a Dockerfile, an unignored context
+# ships this machine's .env -- superuser passwords included -- into an image
+# layer.
+#
+# Denylist rather than allowlist, so a new file is included by default and a
+# forgotten entry costs context size rather than a broken build.
+
+# Secrets and per-machine configuration.
+.env
+.env.*
+!.env.example
+compose.override.yml
+compose.override.yaml
+
+# Runtime state and dumps. Large, machine-specific, and never wanted in an
+# image.
+state/
+backups/
+*.bak
+*.dockyard.bak
+
+# History.
+.git/
+.gitignore
+
+# Compose files and docs are not build inputs.
+compose.yml
+README.md
+LICENSE
+
+# Editor and OS noise.
+.DS_Store
+.idea/
+.vscode/
+*.swp

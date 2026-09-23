@@ -1,0 +1,250 @@
+#!/bin/sh
+# Create a project's Postgres database and the role that owns it.
+#
+#   bin/create-db                    # asks for database, user and password
+#   bin/create-db my-app             # asks for user and password
+#   bin/create-db my-app my_app_user # asks for the password
+#
+# At each prompt, Enter takes the default shown in brackets: the user
+# defaults to the database name, and a blank password generates one. Before
+# anything is created it shows a summary and offers to edit any value or
+# quit. With no terminal attached (a script, CI) nothing is asked and the
+# defaults are used.
+#
+# Hyphens become underscores, so `my-app` gets database `my_app`. The result
+# is printed once as .env lines ready to paste; nothing stores the password,
+# so copy it before closing the terminal.
+#
+# Refuses if the role or database already exists rather than resetting a
+# password some project is already using.
+
+set -eu
+
+cd "$(dirname "$0")/.."
+
+usage() {
+  echo "usage: bin/create-db [database] [user]" >&2
+  exit 64
+}
+
+[ $# -le 2 ] || usage
+
+interactive=false
+[ -t 0 ] && interactive=true
+
+# ask PROMPT DEFAULT -- sets $answer, or DEFAULT on Enter. Ctrl-D cancels the
+# whole run, so it can never be mistaken for accepting a default. It sets a
+# variable rather than printing, because an exit inside $(...) would only
+# leave the subshell.
+ask() {
+  printf '%s' "$1" >&2
+  [ -n "$2" ] && printf ' [%s]' "$2" >&2
+  printf ': ' >&2
+  if ! read -r answer; then
+    printf '\nCancelled; nothing was created.\n' >&2
+    exit 1
+  fi
+  answer=${answer:-$2}
+}
+
+# Unquoted Postgres identifiers are lowercased and limited to 63 bytes.
+# Restricting names to this pattern means they never need quoting in SQL or
+# in the project's .env.
+identifier() {
+  id=$(printf '%s' "$2" | tr '-' '_')
+  if ! printf '%s' "$id" | grep -Eq '^[a-z][a-z0-9_]{0,62}$'; then
+    echo "error: $1 '$2' must start with a lowercase letter and contain only lowercase letters, digits, - and _ (max 63)" >&2
+    return 1
+  fi
+}
+
+psql() {
+  docker compose exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -qAt "$@"
+}
+
+# taken DATABASE USER -- prints why the pair cannot be created, if it can't.
+taken() {
+  psql -c "SELECT concat_ws(', ',
+    (SELECT 'database ''$1'' already exists' FROM pg_database WHERE datname = '$1'),
+    (SELECT 'role ''$2'' already exists' FROM pg_roles WHERE rolname = '$2'))"
+}
+
+# --- Non-interactive: take the arguments and defaults, fail on anything wrong
+
+if ! $interactive; then
+  [ $# -ge 1 ] || usage
+  identifier 'database name' "$1" || exit 65
+  database=$id
+  identifier 'user' "${2:-$database}" || exit 65
+  user=$id
+  password=
+  problem=$(taken "$database" "$user")
+  if [ -n "$problem" ]; then
+    echo "error: $problem" >&2
+    exit 1
+  fi
+fi
+
+# --- Interactive: ask, show a summary, and let each value be corrected ------
+
+if $interactive; then
+  database=${1:-}
+  user=${2:-}
+  editing=false
+
+  while :; do
+    # A value given as an argument is used as-is the first time round; on
+    # an edit pass every field is asked again with its current value as the
+    # default, so Enter keeps it.
+    ask_db=$editing;   [ -z "$database" ] && ask_db=true
+    ask_user=$editing; [ -z "$user" ] && ask_user=true
+
+    previous_db=$database
+    while :; do
+      if $ask_db; then ask 'Database name (e.g. my-app)' "$database"; database=$answer; fi
+      if [ -z "$database" ]; then
+        echo "error: a database name is required" >&2
+      elif identifier 'database name' "$database"; then
+        database=$id
+        break
+      fi
+      database=
+      ask_db=true
+    done
+
+    # A user that was just following the database name keeps following it.
+    [ "$user" = "$previous_db" ] && user=
+
+    while :; do
+      if $ask_user; then ask 'Database user' "${user:-$database}"; user=$answer; fi
+      if identifier 'user' "$user"; then
+        user=$id
+        break
+      fi
+      user=
+      ask_user=true
+    done
+
+    while :; do
+      ask 'Password (Enter to generate one)' ''; password=$answer
+      [ -z "$password" ] && break
+      ask 'Confirm password' ''; confirm=$answer
+      [ "$password" = "$confirm" ] && break
+      echo "error: passwords do not match; enter it again" >&2
+    done
+
+    problem=$(taken "$database" "$user")
+    if [ -n "$problem" ]; then
+      echo "error: $problem; choose another name" >&2
+      editing=true
+      continue
+    fi
+
+    echo >&2
+    echo "  Database: $database" >&2
+    echo "  User:     $user" >&2
+    if [ -n "$password" ]; then
+      echo "  Password: $password" >&2
+    else
+      echo "  Password: (generated on create)" >&2
+    fi
+    echo >&2
+
+    ask 'Create it? [Y]es, [e]dit, [q]uit' ''; choice=$answer
+    case "$choice" in
+      ''|y|Y|yes) break ;;
+      e|E|edit) editing=true ;;
+      q|Q|quit) echo "Cancelled; nothing was created." >&2; exit 1 ;;
+      *) echo "error: answer y, e or q" >&2; editing=true ;;
+    esac
+  done
+fi
+
+generated=false
+if [ -z "$password" ]; then
+  # Hex, so it is safe unquoted in a URL and a .env file.
+  password=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
+  generated=true
+fi
+
+# --- Create -----------------------------------------------------------------
+
+# The password goes in as a psql variable and :'pw' quotes it, so a typed
+# password containing quotes or backslashes cannot break out of the literal.
+if ! psql -v pw="$password" <<SQL
+CREATE ROLE $user LOGIN PASSWORD :'pw'
+  NOSUPERUSER NOCREATEDB NOCREATEROLE;
+SQL
+then
+  exit 1
+fi
+
+# CREATE DATABASE cannot run inside a transaction, so if it fails the role
+# is dropped again rather than left behind without a database.
+if ! psql <<SQL
+CREATE DATABASE $database OWNER $user;
+REVOKE ALL ON DATABASE $database FROM PUBLIC;
+SQL
+then
+  psql -c "DROP ROLE IF EXISTS $user" >/dev/null || true
+  echo "error: could not create database '$database'; role '$user' removed again" >&2
+  exit 1
+fi
+
+# A generated password is plain hex. A typed one may contain characters .env
+# parsers treat specially (#, spaces, $), so it is quoted: single quotes when
+# possible since they are literal, double quotes with escapes otherwise.
+env_password=$password
+if ! printf '%s' "$password" | grep -Eq '^[A-Za-z0-9._-]+$'; then
+  case "$password" in
+    *\'*) env_password="\"$(printf '%s' "$password" | sed 's/[\\"$]/\\&/g')\"" ;;
+    *)    env_password="'$password'" ;;
+  esac
+fi
+
+# The host port is whatever .env publishes Postgres on, with the same 5432
+# default compose.yml falls back to.
+host_port=$(sed -n 's/^POSTGRES_PORT=//p' .env 2>/dev/null | tail -n 1)
+host_port=${host_port:-5432}
+
+echo
+echo "Created database '$database' owned by '$user'."
+$generated && echo "The password was generated and is not stored anywhere; copy it now."
+
+# One block per connection style the docs describe. Each is complete, so the
+# one that matches how the app runs can be pasted as-is.
+env_block() {
+  cat <<ENV
+DB_CONNECTION=pgsql
+DB_HOST=$1
+DB_PORT=$2
+DB_DATABASE=$database
+DB_USERNAME=$user
+DB_PASSWORD=$env_password
+ENV
+}
+
+cat <<TXT
+
+--- 1. App container on the dockyard network ---------------------------------
+    Default route. README: "Connecting an application".
+
+TXT
+env_block postgres 5432
+
+cat <<TXT
+
+--- 2. App container off the network, through the host -----------------------
+    Docker Desktop (macOS, Windows) only. On Linux, join the network instead.
+    docs/connecting-without-the-network.md
+
+TXT
+env_block host.docker.internal "$host_port"
+
+cat <<TXT
+
+--- 3. Directly on this machine (GUI client, test runner, dev server) ---------
+    README: "From the host instead".
+
+TXT
+env_block 127.0.0.1 "$host_port"

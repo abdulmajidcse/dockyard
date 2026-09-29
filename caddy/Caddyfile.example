@@ -1,0 +1,33 @@
+# dockyard's local router. Copy to Caddyfile (gitignored) and add your apps:
+#
+#   cp caddy/Caddyfile.example caddy/Caddyfile
+#   docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
+#
+# Until caddy/Caddyfile exists, Caddy runs this example as-is.
+#
+# Browsers resolve every *.localhost name to 127.0.0.1 on their own, so no
+# /etc/hosts entries are needed. Sites are plain http: a .localhost origin is
+# already a secure context, and it spares every app a local CA.
+
+{
+	auto_https off
+	# Keep the admin API on (its default, the container's own loopback). The
+	# healthcheck and `caddy reload` both use it, and it is never published.
+}
+
+# An app running on this machine, or publishing a port from its own compose
+# file: reach it through the host.
+http://my-app.localhost {
+	reverse_proxy host.docker.internal:8000
+}
+
+# An app container that joins the dockyard network: reach it by service name
+# and container port.
+http://my-api.localhost {
+	reverse_proxy my-api:8080
+}
+
+# Multi-tenant apps: one block serves the apex and every subdomain.
+http://my-shop.localhost, http://*.my-shop.localhost {
+	reverse_proxy host.docker.internal:3000
+}

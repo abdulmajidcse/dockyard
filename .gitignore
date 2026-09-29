@@ -14,6 +14,9 @@ backups/
 compose.override.yml
 compose.override.yaml
 
+# This machine's routes. The tracked template is caddy/Caddyfile.example.
+caddy/Caddyfile
+
 # Backups written by `dockyard project:env --write` before it patches a
 # project's .env in place.
 *.bak

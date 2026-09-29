@@ -24,8 +24,8 @@ DB_PORT=5432                # POSTGRES_PORT
 REDIS_HOST=host.docker.internal
 REDIS_PORT=6379             # REDIS_PORT
 
-AWS_ENDPOINT=http://host.docker.internal:9000
-AWS_URL=http://127.0.0.1:9000/my-app
+AWS_ENDPOINT=http://host.docker.internal:8333   # SEAWEEDFS_S3_PORT
+AWS_URL=http://127.0.0.1:8333/my-app
 
 MAIL_HOST=host.docker.internal
 MAIL_PORT=1025              # MAILPIT_SMTP_PORT
@@ -38,7 +38,7 @@ Everything else (database name, user, password, bucket) stays the same.
 
 - **Ports must match `.env`.** If you change `POSTGRES_PORT` in dockyard,
   update your app too. On the network, the port is always `5432`.
-- **Check MinIO presigned URLs in a browser.** They are signed with
+- **Check S3 presigned URLs in a browser.** They are signed with
   `host.docker.internal`, which your browser may not resolve.
 
 ## Linux

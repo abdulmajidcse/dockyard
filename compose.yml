@@ -1,7 +1,7 @@
 # dockyard -- shared local backing services.
 #
-# Four services, all started by `dockyard up`: Postgres, Redis, MinIO and
-# Mailpit. There is no optional tier and nothing to enable.
+# Five services, all started by `dockyard up`: Postgres, Redis, SeaweedFS,
+# Mailpit and Caddy. There is no optional tier and nothing to enable.
 #
 # Three rules govern this file.
 #
@@ -42,8 +42,9 @@ networks:
 volumes:
   postgres-data:
   redis-data:
-  minio-data:
+  seaweedfs-data:
   mailpit-data:
+  caddy-data:
 
 services:
 
@@ -86,25 +87,32 @@ services:
       <<: *healthcheck
       test: ["CMD", "redis-cli", "ping"]
 
-  minio:
+  seaweedfs:
     <<: *restart
-    image: minio/minio:${MINIO_VERSION:-latest}
+    image: chrislusf/seaweedfs:${SEAWEEDFS_VERSION:-4.48}
     networks: [dockyard]
-    command: ["server", "/data", "--console-address", ":9001"]
+    # `mini` runs master, volume, filer, S3 gateway and admin UI in one
+    # process -- the single-node shape a local stack wants.
+    command:
+      - mini
+      - -dir=/data
+      - -master.telemetry=false
+      - -admin.user=${SEAWEEDFS_ROOT_USER:-dockyard}
+      - -admin.password=${SEAWEEDFS_ROOT_PASSWORD:-dockyard-root}
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-dockyard}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-dockyard-root}
-      # Projects get a presigned-URL host that matches what their framework
-      # will hand to a browser on the host, not the container hostname.
-      MINIO_BROWSER_REDIRECT_URL: http://127.0.0.1:${MINIO_CONSOLE_PORT:-9001}
+      # Read on every start as the S3 admin identity. Without any identity
+      # SeaweedFS serves S3 anonymously; with this one, unsigned requests are
+      # refused and projects get scoped keys from `s3.configure`.
+      AWS_ACCESS_KEY_ID: ${SEAWEEDFS_ROOT_USER:-dockyard}
+      AWS_SECRET_ACCESS_KEY: ${SEAWEEDFS_ROOT_PASSWORD:-dockyard-root}
     ports:
-      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
-      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "127.0.0.1:${SEAWEEDFS_S3_PORT:-8333}:8333"
+      - "127.0.0.1:${SEAWEEDFS_ADMIN_PORT:-23646}:23646"
     volumes:
-      - minio-data:/data
+      - seaweedfs-data:/data
     healthcheck:
       <<: *healthcheck
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8333/healthz"]
 
   mailpit:
     <<: *restart
@@ -129,3 +137,34 @@ services:
     healthcheck:
       <<: *healthcheck
       test: ["CMD", "/mailpit", "readyz"]
+
+  caddy:
+    <<: *restart
+    image: caddy:${CADDY_VERSION:-2-alpine}
+    networks: [dockyard]
+    # Routes <name>.localhost to apps. Upstreams are either a container on the
+    # dockyard network by service name, or an app's published port through
+    # host.docker.internal -- which this line makes resolvable on Linux too.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # The directory is mounted rather than the file: editors that save by
+    # rename would otherwise leave the container reading the old inode. The
+    # tracked example is the fallback, so a fresh clone starts without a
+    # Caddyfile of its own.
+    command:
+      - sh
+      - -c
+      - |
+        f=/etc/caddy/Caddyfile
+        [ -f "$$f" ] || f=/etc/caddy/Caddyfile.example
+        exec caddy run --config "$$f" --adapter caddyfile
+    ports:
+      - "127.0.0.1:${CADDY_HTTP_PORT:-80}:80"
+    volumes:
+      - ./caddy:/etc/caddy:ro
+      - caddy-data:/data
+    healthcheck:
+      <<: *healthcheck
+      # The admin API listens on the container's loopback only; it is never
+      # published, and it is what `caddy reload` talks to.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]

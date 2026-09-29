@@ -13,6 +13,7 @@
 !.env.example
 compose.override.yml
 compose.override.yaml
+caddy/Caddyfile
 
 # Runtime state and dumps. Large, machine-specific, and never wanted in an
 # image.
